@@ -25,12 +25,11 @@ func main() {
 
 // Run запуск скрипта переноса данных из excel -> word на места плейсхолдеров
 func run() ([]string, error) {
-	//dir, err := os.Getwd() //при разработке
-	execPath, err := os.Executable() //при go build
+	//dir, err := developDir()
+	dir, err := prodDir()
 	if err != nil {
 		return nil, fmt.Errorf("не удалось определить текущую папку: %w", err)
 	}
-	dir := filepath.Dir(execPath)
 
 	excelPath, err := findFileByExt(dir, ".xlsx")
 	if err != nil {
@@ -44,9 +43,9 @@ func run() ([]string, error) {
 	fmt.Println("Excel-файл:", filepath.Base(excelPath))
 	fmt.Println("Word-шаблон:", filepath.Base(wordPath))
 
-	outDir := filepath.Join(dir, "output")
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return nil, fmt.Errorf("не удалось создать папку output: %w", err)
+	outDir, err := outputDir(dir)
+	if err != nil {
+		return nil, err
 	}
 
 	// собираем все данные из excel в качестве реплейсментов для word-а
@@ -60,8 +59,8 @@ func run() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ошибка при открытии word-файла: %w", err)
 	}
-	logMissPlaceholders(doc, allReplacements[0])
 	defer doc.Close()
+	logMissPlaceholders(doc, allReplacements[0])
 
 	createdDocs := make([]string, 0, len(allReplacements))
 	for i, replacements := range allReplacements {
@@ -75,6 +74,20 @@ func run() ([]string, error) {
 	}
 
 	return createdDocs, nil
+}
+
+// при разработке
+func developDir() (string, error) {
+	return os.Getwd()
+}
+
+// при go build
+func prodDir() (string, error) {
+	execPath, err := os.Executable() //при go build
+	if err != nil {
+		return "", fmt.Errorf("не удалось определить текущую папку: %w", err)
+	}
+	return filepath.Dir(execPath), nil
 }
 
 // findFileByExt ищет ровно один файл с заданным расширением в папке dir.
@@ -108,6 +121,15 @@ func findFileByExt(dir, ext string) (string, error) {
 	default:
 		return "", fmt.Errorf("в папке найдено несколько файлов %s, оставьте только один: %v", ext, found)
 	}
+}
+
+// outputDir исходная директория для сохранения новых word-файлов
+func outputDir(dir string) (outDir string, err error) {
+	outDir = filepath.Join(dir, "output")
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return "", fmt.Errorf("не удалось создать папку output: %w", err)
+	}
+	return
 }
 
 // readExcel читает первый лист: первая строка — заголовки (имена плейсхолдеров
@@ -154,10 +176,48 @@ func readAllReplacements(excelPath string) ([]docx.PlaceholderMap, error) {
 			if idx < len(row) {
 				replacements[strings.TrimSpace(header)] = row[idx]
 			}
+
+			if header == "дата_договора" {
+				textDate, err := numbersToText(row[idx])
+				if err != nil {
+					return nil, err
+				}
+				replacements["дата_договора_текст"] = textDate
+			}
 		}
 		allReplacements = append(allReplacements, replacements)
 	}
 	return allReplacements, nil
+}
+
+var monthMap = map[string]string{
+	"01": "января",
+	"02": "февраля",
+	"03": "марта",
+	"04": "апреля",
+	"05": "мая",
+	"06": "июня",
+	"07": "июля",
+	"08": "августа",
+	"09": "сентября",
+	"10": "октября",
+	"11": "ноября",
+	"12": "декабря",
+}
+
+// numbersToText перевод месяца в дате в текст
+// 23.04.2026 -> 23 апреля 2026
+func numbersToText(date string) (string, error) {
+	arrDate := strings.Split(date, ".")
+	if len(arrDate) != 3 {
+		return "", fmt.Errorf("дата должна содержать день.месяц.год")
+	}
+	month := arrDate[1]
+	if len(month) != 2 {
+		return "", fmt.Errorf("месяц должен включать два числа. А включает %d", len(month))
+	}
+
+	return fmt.Sprintf("%s %s %s", arrDate[0], monthMap[month], arrDate[2]), nil
 }
 
 // LogMissPlaceholders логирует пропущенные плейсхолдеры в word.
@@ -168,11 +228,11 @@ func logMissPlaceholders(doc *docx.Document, replacements docx.PlaceholderMap) {
 		fmt.Printf("ошибка во время получения плейсхолдеров %s\n", err)
 	}
 
-	missPlaceholders := make(map[string]int)
+	missPlaceholders := make(map[string]struct{})
 	for _, placeholder := range placeholders {
 		res := placeholder[1 : len(placeholder)-1]
-		if replacements[res] == nil {
-			missPlaceholders[res] = 1
+		if _, ok := replacements[res]; !ok {
+			missPlaceholders[res] = struct{}{}
 		}
 	}
 
