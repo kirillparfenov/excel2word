@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/lukasjarosch/go-docx"
 )
@@ -26,11 +27,6 @@ func replaceWordReplacements(dir string, excelReplacements []docx.PlaceholderMap
 	}
 	fmt.Println("Word-шаблон:", filepath.Base(wordPath))
 
-	outDir, err := outputDir(dir)
-	if err != nil {
-		return nil, err
-	}
-
 	// логируем пропуски реплейсментов в excel -> word
 	doc, err := docx.Open(wordPath)
 	if err != nil {
@@ -39,18 +35,38 @@ func replaceWordReplacements(dir string, excelReplacements []docx.PlaceholderMap
 	defer doc.Close()
 	logMissPlaceholders(doc, excelReplacements[0])
 
-	createdDocs := make([]string, 0, len(excelReplacements)+1)
+	outDir, err := outputDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	createdDocs := make([]string, len(excelReplacements))
+	errors := make([]error, len(excelReplacements))
+	var wg sync.WaitGroup
+	wg.Add(len(excelReplacements))
+
 	for i, replacements := range excelReplacements {
-		docName, err := createDoc(&Document{
-			outDir:       outDir,
-			rowIndex:     i,
-			wordPath:     wordPath,
-			replacements: replacements,
-		})
+		go func(i int, replacements docx.PlaceholderMap) {
+			defer wg.Done()
+			docName, err := createDoc(&Document{
+				outDir:       outDir,
+				rowIndex:     i,
+				wordPath:     wordPath,
+				replacements: replacements,
+			})
+			if err != nil {
+				errors[i] = err
+				return
+			}
+			createdDocs[i] = docName
+		}(i, replacements)
+	}
+	wg.Wait()
+
+	for _, err := range errors {
 		if err != nil {
 			return nil, err
 		}
-		createdDocs = append(createdDocs, docName)
 	}
 
 	return createdDocs, nil
